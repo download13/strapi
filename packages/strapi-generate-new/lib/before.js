@@ -66,17 +66,17 @@ module.exports = (scope, cb) => {
   const connectionValidation = () => {
     const databaseChoices = [
       {
-        name: 'MongoDB (recommended)',
+        name: 'MongoDB',
         value: {
           database: 'mongo',
-          connector: 'strapi-mongoose'
+          connector: 'strapi-hook-mongoose'
         }
       },
       {
         name: 'Postgres',
         value: {
           database: 'postgres',
-          connector: 'strapi-bookshelf',
+          connector: 'strapi-hook-bookshelf',
           module: 'pg'
         }
       },
@@ -84,7 +84,7 @@ module.exports = (scope, cb) => {
         name: 'MySQL',
         value: {
           database: 'mysql',
-          connector: 'strapi-bookshelf',
+          connector: 'strapi-hook-bookshelf',
           module: 'mysql'
         }
       }
@@ -132,7 +132,7 @@ module.exports = (scope, cb) => {
                   type: 'input',
                   name: 'database',
                   message: 'Database name:',
-                  default: _.get(scope.database, 'database', 'strapi')
+                  default: _.get(scope.database, 'database', scope.name)
                 },
                 {
                   when: !hasDatabaseConfig,
@@ -142,10 +142,17 @@ module.exports = (scope, cb) => {
                   default: _.get(scope.database, 'host', '127.0.0.1')
                 },
                 {
+                  when: !hasDatabaseConfig && scope.client.database === 'mongo',
+                  type: 'boolean',
+                  name: 'srv',
+                  message: '+srv connection:',
+                  default: _.get(scope.database, 'srv', false)
+                },
+                {
                   when: !hasDatabaseConfig,
                   type: 'input',
                   name: 'port',
-                  message: 'Port:',
+                  message: `Port${scope.client.database === 'mongo' ? ' (It will be ignored if you enable +srv)' : ''}:`,
                   default: (answers) => { // eslint-disable-line no-unused-vars
                     if (_.get(scope.database, 'port')) {
                       return scope.database.port;
@@ -179,7 +186,7 @@ module.exports = (scope, cb) => {
                   when: !hasDatabaseConfig && scope.client.database === 'mongo',
                   type: 'input',
                   name: 'authenticationDatabase',
-                  message: 'Authentication database:',
+                  message: 'Authentication database (Maybe "admin" or blank):',
                   default: _.get(scope.database, 'authenticationDatabase', undefined)
                 },
                 {
@@ -192,10 +199,11 @@ module.exports = (scope, cb) => {
               ])
               .then(answers => {
                 if (hasDatabaseConfig) {
-                  answers = _.omit(scope.database.settings, ['client']);
+                  answers = _.merge((_.omit(scope.database.settings, ['client'])), scope.database.options);
                 }
 
                 scope.database.settings.host = answers.host;
+                scope.database.settings.srv = _.toString(answers.srv) === 'true';
                 scope.database.settings.port = answers.port;
                 scope.database.settings.database = answers.database;
                 scope.database.settings.username = answers.username;
@@ -214,27 +222,27 @@ module.exports = (scope, cb) => {
             let packageCmd = packageManager.commands('install --prefix', scope.tmpPath);
             // Manually create the temp directory for yarn
             if (!isStrapiInstalledWithNPM) {
-              shell.exec('mkdir tmp');
+              shell.exec(`mkdir ${scope.tmpPath}`);
             }
 
-            let cmd = `${packageCmd} ${scope.client.connector}@alpha`;
+            let cmd = `${packageCmd} ${scope.client.connector}@${scope.strapiPackageJSON.version}`;
 
             if (scope.client.module) {
               cmd += ` ${scope.client.module}`;
             }
 
-            if (scope.client.connector === 'strapi-bookshelf') {
-              cmd += ` strapi-knex@alpha`;
+            if (scope.client.connector === 'strapi-hook-bookshelf') {
+              cmd += ` strapi-hook-knex@${scope.strapiPackageJSON.version}`;
 
-              scope.additionalsDependencies = ['strapi-knex', 'knex'];
+              scope.additionalsDependencies = ['strapi-hook-knex', 'knex'];
             }
 
             exec(cmd, () => {
               if (scope.client.module) {
-                const lock = require(path.join(`${scope.tmpPath}`,`/node_modules/`,`${scope.client.module}/package.json`));
+                const lock = require(path.join(`${scope.tmpPath}`, '/node_modules/', `${scope.client.module}/package.json`));
                 scope.client.version = lock.version;
 
-                if (scope.developerMode === true && scope.client.connector === 'strapi-bookshelf') {
+                if (scope.developerMode === true && scope.client.connector === 'strapi-hook-bookshelf') {
                   const knexVersion = require(path.join(`${scope.tmpPath}`,`/node_modules/`,`knex/package.json`));
                   scope.additionalsDependencies[1] = `knex@${knexVersion.version || 'latest'}`;
                 }
@@ -248,10 +256,11 @@ module.exports = (scope, cb) => {
         Promise.all(asyncFn)
           .then(() => {
             try {
-              require(path.join(`${scope.tmpPath}`,`/node_modules/`,`${scope.client.connector}/lib/utils/connectivity.js`))(scope, cb.success, connectionValidation);
+              require(path.join(`${scope.tmpPath}`, '/node_modules/', `${scope.client.connector}/lib/utils/connectivity.js`))(scope, cb.success, connectionValidation);
             } catch(err) {
               shell.rm('-r', scope.tmpPath);
-              cb.success();
+              console.log(err);
+              cb.error();
             }
           });
       });
